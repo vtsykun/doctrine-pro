@@ -1154,7 +1154,73 @@ class SqlWalker implements TreeWalker
             case ($joinDeclaration instanceof \Doctrine\ORM\Query\AST\JoinAssociationDeclaration):
                 $sql .= $this->walkJoinAssociationDeclaration($joinDeclaration, $joinType, $join->conditionalExpression);
                 break;
+            case ($joinDeclaration instanceof Query\AST\JoinInversionPathExpression):
+                $sql .= $this->walkJoinInverseDeclaration($joinDeclaration, $joinType, $join->conditionalExpression);
+                break;
         }
+
+        return $sql;
+    }
+
+    /**
+     * @param Query\AST\JoinInversionPathExpression $joinDeclaration
+     * @param string $joinType
+     * @param Query\AST\ConditionalExpression $conditionalExpression
+     *
+     * @return string
+     */
+    public function walkJoinInverseDeclaration($joinDeclaration, $joinType, $conditionalExpression)
+    {
+        $rangeVariableDeclaration = $joinDeclaration->rangeVariableDeclaration;
+
+        /** @var ClassMetadata $joinClassMetadata */
+        $joinClassMetadata = $this->queryComponents[$rangeVariableDeclaration->aliasIdentificationVariable]['metadata'];
+        $assoc = $joinClassMetadata->associationMappings[$joinDeclaration->associationField];
+        $targetClass = $this->em->getClassMetadata($assoc['targetEntity']);
+        $joinTable = $assoc['joinTable'];
+        $joinTableAlias   = $this->getSQLTableAlias($joinTable['name']);
+
+        $sql = $this->quoteStrategy->getJoinTableName($assoc, $targetClass, $this->platform) . ' '
+            . $joinTableAlias . ' ON ';
+
+        $targetTableAlias   = $this->getSQLTableAlias($targetClass->getTableName(), $joinDeclaration->targetAssociation);
+
+        // join conditions
+        $joinSqlParts = [];
+        foreach ($joinTable['inverseJoinColumns'] as $joinColumn) {
+            $targetColumn = $this->quoteStrategy->getColumnName(
+                $targetClass->fieldNames[$joinColumn['referencedColumnName']],
+                $targetClass,
+                $this->platform
+            );
+
+            $joinSqlParts[] = $joinTableAlias . '.' . $joinColumn['name'] . ' = ' . $targetTableAlias . '.' . $targetColumn;
+        }
+
+        $sql .= implode(' AND ', $joinSqlParts);
+        $sql .= ($joinType == Query\AST\Join::JOIN_TYPE_LEFT || $joinType == Query\AST\Join::JOIN_TYPE_LEFTOUTER)
+            ? ' LEFT JOIN '
+            : ' INNER JOIN ';
+        $sql .= $this->walkRangeVariableDeclaration($joinDeclaration->rangeVariableDeclaration) . ' ON ';
+
+
+        $joinSqlParts = [];
+        $targetTableAlias = $this->getSQLTableAlias(
+            $joinClassMetadata->getTableName(),
+            $rangeVariableDeclaration->aliasIdentificationVariable
+        );
+        foreach ($joinTable['joinColumns'] as $joinColumn) {
+            $targetColumn = $this->quoteStrategy->getColumnName(
+                $joinClassMetadata->fieldNames[$joinColumn['referencedColumnName']],
+                $joinClassMetadata,
+                $this->platform
+            );
+
+            $joinSqlParts[] = $joinTableAlias . '.' . $joinColumn['name'] . ' = ' . $targetTableAlias . '.' . $targetColumn;
+        }
+
+        $sql .= implode(' AND ', $joinSqlParts);
+        $sql .= $conditionalExpression ? ' AND ' . $this->walkConditionalExpression($conditionalExpression) : '';
 
         return $sql;
     }

@@ -1564,6 +1564,7 @@ class Parser
         while (
             $this->lexer->isNextToken(Lexer::T_LEFT) ||
             $this->lexer->isNextToken(Lexer::T_INNER) ||
+            $this->lexer->isNextToken(Lexer::T_INVERSE) ||
             $this->lexer->isNextToken(Lexer::T_JOIN)
         ) {
             $joins[] = $this->Join();
@@ -1646,6 +1647,7 @@ class Parser
         // Check Join type
         $joinType = AST\Join::JOIN_TYPE_INNER;
 
+        $isInverse = $this->lexer->isNextToken(Lexer::T_INVERSE);
         switch (true) {
             case ($this->lexer->isNextToken(Lexer::T_LEFT)):
                 $this->match(Lexer::T_LEFT);
@@ -1664,14 +1666,37 @@ class Parser
                 $this->match(Lexer::T_INNER);
                 break;
 
+            case ($this->lexer->isNextToken(Lexer::T_INVERSE)):
+                $this->match(Lexer::T_INVERSE);
+                $joinType = AST\Join::JOIN_TYPE_LEFT;
+                if ($this->lexer->isNextToken(Lexer::T_INNER)) {
+                    $this->match(Lexer::T_INNER);
+                    $joinType = AST\Join::JOIN_TYPE_INNER;
+                }
+
+                if ($this->lexer->isNextToken(Lexer::T_LEFT)) {
+                    $joinType = AST\Join::JOIN_TYPE_LEFT;
+                }
+
+                break;
             default:
                 // Do nothing
         }
 
         $this->match(Lexer::T_JOIN);
 
-        $next            = $this->lexer->glimpse();
-        $joinDeclaration = ($next['type'] === Lexer::T_DOT) ? $this->JoinAssociationDeclaration() : $this->RangeVariableDeclaration();
+        switch ($joinType) {
+            case ($isInverse === true):
+                $joinDeclaration = $this->JoinInversionPathDeclaration();
+                break;
+            default:
+                $next            = $this->lexer->glimpse();
+                $joinDeclaration = ($next['type'] === Lexer::T_DOT) ?
+                    $this->JoinAssociationDeclaration() :
+                    $this->RangeVariableDeclaration();
+                break;
+        }
+
         $adhocConditions = $this->lexer->isNextToken(Lexer::T_WITH);
         $join            = new AST\Join($joinType, $joinDeclaration);
 
@@ -1690,6 +1715,31 @@ class Parser
         }
 
         return $join;
+    }
+
+    /**
+     * JoinInversionPathDeclaration ::= RangeVariableDeclaration ["MEMBER"] StateFieldPathExpression ["OF"] IdentificationVariable
+     *
+     * @return Query\AST\JoinInversionPathExpression
+     */
+    public function JoinInversionPathDeclaration()
+    {
+        $joinDeclaration = $this->RangeVariableDeclaration();
+        $joinDeclaration->isRoot = false;
+        $this->match(Lexer::T_MEMBER);
+        $associationField = $this->CollectionValuedPathExpression();
+
+        if ($this->lexer->isNextToken(Lexer::T_OF)) {
+            $this->match(Lexer::T_OF);
+        }
+
+        $joinDeclaration = new Query\AST\JoinInversionPathExpression(
+            $joinDeclaration,
+            $associationField->field,
+            $this->IdentificationVariable()
+        );
+
+        return $joinDeclaration;
     }
 
     /**
